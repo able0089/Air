@@ -4,3 +4,15 @@ dist
 server/public
 vite.config.ts.*
 *.tar.gz
+.env
+.env.local
+.env.*.local
+eng.traineddata
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.cache
+.parcel-cache
+build
+out
