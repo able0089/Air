@@ -2,8 +2,11 @@ const express = require('express');
 const { Client } = require('discord.js-selfbot-v13');
 const { createWorker } = require('tesseract.js');
 
-console.log('[Startup] Initializing Pokétwo bot...');
+console.log('[Startup] ============================================');
+console.log('[Startup] Pokétwo Discord Bot Starting');
 console.log('[Startup] Node version:', process.version);
+console.log('[Startup] Environment: ' + (process.env.NODE_ENV || 'production'));
+console.log('[Startup] ============================================');
 
 const TOKEN = process.env.TOKEN;
 if (!TOKEN) {
@@ -11,18 +14,24 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-console.log('[Startup] Discord token detected, length:', TOKEN.length);
-console.log('[Startup] Token begins with:', TOKEN.substring(0, 10) + '...');
+console.log('[Startup] ✓ TOKEN detected (length:', TOKEN.length + ')');
 
 const POKETWO_ID = '716390085896962058';
 const SPAM_CHANNEL_ID = process.env.SPAM_CHANNEL_ID;
 
-const client = new Client();
+if (SPAM_CHANNEL_ID) {
+  console.log('[Startup] ✓ SPAM_CHANNEL_ID detected:', SPAM_CHANNEL_ID);
+}
 
-console.log('[Startup] Discord client created');
+const client = new Client({
+  allowWebAssembly: true
+});
+
+console.log('[Startup] ✓ Discord client created');
 
 let worker = null;
 let tesseractReady = false;
+let discordReady = false;
 
 async function getWorker() {
   if (worker) return worker;
@@ -31,9 +40,9 @@ async function getWorker() {
     try {
       worker = await createWorker('eng');
       tesseractReady = true;
-      console.log('[OCR] Tesseract worker ready');
+      console.log('[OCR] ✓ Tesseract worker ready');
     } catch (err) {
-      console.error('[OCR] Failed to initialize Tesseract:', err.message);
+      console.error('[OCR] ✗ Failed to initialize Tesseract:', err.message);
       return null;
     }
   }
@@ -84,12 +93,12 @@ let spamInterval = null;
 
 function startSpammer() {
   if (!SPAM_CHANNEL_ID) {
-    console.log('[Spammer] SPAM_CHANNEL_ID not set, spammer disabled');
+    console.log('[Spammer] Disabled (no SPAM_CHANNEL_ID)');
     return;
   }
   if (spamInterval) clearInterval(spamInterval);
   
-  console.log('[Spammer] Starting spammer on channel:', SPAM_CHANNEL_ID);
+  console.log('[Spammer] ✓ Starting on channel:', SPAM_CHANNEL_ID);
   spamInterval = setInterval(async () => {
     try {
       const channel = await client.channels.fetch(SPAM_CHANNEL_ID);
@@ -103,27 +112,36 @@ function startSpammer() {
   }, 2000);
 }
 
-client.on('ready', () => {
-  console.log('[Bot] ========================================');
-  console.log('[Bot] Discord Ready Event Fired!');
+client.once('ready', () => {
+  discordReady = true;
+  console.log('\n[Bot] ========================================');
+  console.log('[Bot] ✓ DISCORD READY');
   console.log('[Bot] Logged in as:', client.user.tag);
   console.log('[Bot] User ID:', client.user.id);
-  console.log('[Bot] ========================================');
+  console.log('[Bot] ========================================\n');
   startSpammer();
   getWorker().catch(err => console.error('[Bot] OCR initialization error:', err));
 });
 
-client.on('error', error => {
-  console.error('[Bot] Discord client error:', error.message);
-  console.error('[Bot] Error code:', error.code);
+client.on('reconnecting', () => {
+  console.warn('[Bot] Attempting to reconnect to Discord...');
 });
 
 client.on('disconnect', () => {
-  console.warn('[Bot] Client disconnected from Discord');
+  console.warn('[Bot] Disconnected from Discord');
+  discordReady = false;
+});
+
+client.on('error', error => {
+  console.error('[Bot] Error event:', error.message);
+  if (error.code === 'TOKEN_INVALID') {
+    console.error('[Bot] CRITICAL: Invalid token! Get a new one from Discord.');
+    process.exit(1);
+  }
 });
 
 client.on('warn', warning => {
-  console.warn('[Bot] Discord warning:', warning);
+  console.warn('[Bot] Warning:', warning);
 });
 
 client.on('messageCreate', async message => {
@@ -151,7 +169,7 @@ client.on('messageCreate', async message => {
           if (w) {
             const { data: { text } } = await w.recognize(imageUrl);
             pokemonName = extractPokemonName(text);
-            console.log('[Auto-Catch] OCR result -> Extracted:', pokemonName || 'None');
+            console.log('[Auto-Catch] OCR extracted:', pokemonName || 'None');
           }
         } catch (err) {
           console.error('[Auto-Catch] OCR Error:', err.message);
@@ -159,7 +177,7 @@ client.on('messageCreate', async message => {
       }
 
       if (pokemonName) {
-        console.log('[Auto-Catch] Sending catch command for:', pokemonName);
+        console.log('[Auto-Catch] ✓ Sending catch command for:', pokemonName);
         setTimeout(() => {
           message.channel.send(`<@${POKETWO_ID}> catch ${pokemonName.toLowerCase()}`).catch(console.error);
         }, 500);
@@ -169,7 +187,7 @@ client.on('messageCreate', async message => {
 
     if (message.author.id === POKETWO_ID) {
       if (message.content.includes('verify') || message.content.includes('captcha') || message.content.includes('human')) {
-        console.log('[Bot] Captcha detected! Sending recovery commands...');
+        console.log('[Bot] ⚠ Captcha detected! Sending recovery...');
         message.channel.send(`<@${POKETWO_ID}> inc p`).catch(console.error);
         message.channel.send(`<@${POKETWO_ID}> inc p all -y`).catch(console.error);
         return;
@@ -195,7 +213,7 @@ client.on('messageCreate', async message => {
       }, 3500);
     }
   } catch (err) {
-    console.error('[Bot] Error in messageCreate handler:', err.message);
+    console.error('[Bot] Error in messageCreate:', err.message);
   }
 });
 
@@ -205,31 +223,51 @@ process.on('unhandledRejection', err => {
 
 process.on('uncaughtException', err => {
   console.error('[Error] Uncaught Exception:', err);
-  process.exit(1);
 });
 
 const app = express();
 
 app.get('/', (req, res) => {
-  res.send('Bot is alive');
+  const status = {
+    bot: discordReady ? 'ready' : 'connecting',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  };
+  res.json(status);
 });
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log('[Server] Express server running on port', PORT);
+  console.log('[Server] ✓ Express server running on port', PORT);
 });
 
-console.log('[Startup] Attempting Discord login...');
+console.log('[Startup] Initiating Discord login...');
+console.log('[Startup] Token: ' + TOKEN.substring(0, 10) + '...');
 
-client.login(TOKEN)
+const loginAttempt = client.login(TOKEN);
+
+loginAttempt
   .then(() => {
-    console.log('[Startup] Login promise resolved successfully');
+    console.log('[Startup] ✓ Login call successful, waiting for ready event...');
   })
   .catch(err => {
-    console.error('[Startup] Login failed with error:', err.message);
+    console.error('[Startup] ✗ Login failed immediately:', err.message);
+    console.error('[Startup] Error code:', err.code);
     console.error('[Startup] Full error:', err);
-    setTimeout(() => process.exit(1), 2000);
+    setTimeout(() => process.exit(1), 1000);
   });
 
-console.log('[Startup] Bot initialization complete, waiting for Discord connection...');
+setTimeout(() => {
+  if (!discordReady) {
+    console.error('[Startup] ✗ TIMEOUT: Discord did not ready within 30 seconds');
+    console.error('[Startup] This usually means:');
+    console.error('[Startup]   - Your token is invalid or expired');
+    console.error('[Startup]   - Discord account is locked/banned');
+    console.error('[Startup]   - Network connectivity issue to Discord');
+  }
+}, 30000);
+
+console.log('[Startup] ============================================');
+console.log('[Startup] Initialization complete, waiting for connection...');
+console.log('[Startup] ============================================\n');
