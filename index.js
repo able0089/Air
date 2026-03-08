@@ -1,5 +1,5 @@
 const express = require('express');
-const { Client, Intents } = require('discord.js-selfbot-v13');
+const { Client } = require('discord.js-selfbot-v13');
 const { createWorker } = require('tesseract.js');
 
 console.log('[Startup] Initializing Pokétwo bot...');
@@ -12,25 +12,14 @@ if (!TOKEN) {
 }
 
 console.log('[Startup] Discord token detected, length:', TOKEN.length);
+console.log('[Startup] Token begins with:', TOKEN.substring(0, 10) + '...');
 
 const POKETWO_ID = '716390085896962058';
 const SPAM_CHANNEL_ID = process.env.SPAM_CHANNEL_ID;
 
-let intentsValue = 0;
-try {
-  intentsValue = Intents.FLAGS.GUILDS | Intents.FLAGS.GUILD_MESSAGES | Intents.FLAGS.MESSAGE_CONTENT;
-} catch (err) {
-  console.warn('[Startup] Could not set intents with FLAGS, using default configuration');
-}
+const client = new Client();
 
-const clientOptions = {
-  intents: intentsValue || undefined,
-  failIfNotExists: false
-};
-
-const client = new Client(clientOptions);
-
-console.log('[Startup] Discord client initialized with options:', Object.keys(clientOptions));
+console.log('[Startup] Discord client created');
 
 let worker = null;
 let tesseractReady = false;
@@ -126,6 +115,7 @@ client.on('ready', () => {
 
 client.on('error', error => {
   console.error('[Bot] Discord client error:', error.message);
+  console.error('[Bot] Error code:', error.code);
 });
 
 client.on('disconnect', () => {
@@ -230,8 +220,7 @@ app.listen(PORT, () => {
   console.log('[Server] Express server running on port', PORT);
 });
 
-console.log('[Startup] Attempting Discord login with token...');
-console.log('[Startup] Token begins with:', TOKEN.substring(0, 10) + '...');
+console.log('[Startup] Attempting Discord login...');
 
 client.login(TOKEN)
   .then(() => {
@@ -240,7 +229,7 @@ client.login(TOKEN)
   .catch(err => {
     console.error('[Startup] Login failed with error:', err.message);
     console.error('[Startup] Full error:', err);
-    process.exit(1);
+    setTimeout(() => process.exit(1), 2000);
   });
 
 console.log('[Startup] Bot initialization complete, waiting for Discord connection...');
