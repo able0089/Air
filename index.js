@@ -2,290 +2,185 @@ const express = require('express');
 const { Client } = require('discord.js-selfbot-v13');
 const { createWorker } = require('tesseract.js');
 
-console.log('[Startup] ============================================');
-console.log('[Startup] Pokétwo Discord Bot Starting');
-console.log('[Startup] Node version:', process.version);
-console.log('[Startup] Platform:', process.platform);
-console.log('[Startup] Arch:', process.arch);
-console.log('[Startup] ============================================');
+console.log('[Startup] Pokétwo Bot Initializing...');
 
 const TOKEN = process.env.TOKEN;
 if (!TOKEN) {
-  console.error('[Startup] CRITICAL: TOKEN environment variable is not set!');
+  console.error('[Error] TOKEN not set');
   process.exit(1);
 }
-
-console.log('[Startup] ✓ TOKEN detected (length:', TOKEN.length + ')');
 
 const POKETWO_ID = '716390085896962058';
 const SPAM_CHANNEL_ID = process.env.SPAM_CHANNEL_ID;
 
-if (SPAM_CHANNEL_ID) {
-  console.log('[Startup] ✓ SPAM_CHANNEL_ID detected:', SPAM_CHANNEL_ID);
-}
+let discordReady = false;
+let worker = null;
 
 const client = new Client({
+  intents: [],
+  failIfNotExists: false,
   allowWebAssembly: true,
-  retryLimit: 3
+  retryLimit: 5,
+  messageCacheLifetime: 3600,
+  messageSweepInterval: 3600,
+  invalidRequestWarningInterval: 0,
+  http: {
+    agent: null,
+    version: 10
+  }
 });
 
-console.log('[Startup] ✓ Discord client created');
-console.log('[Startup] ✓ Setting up event handlers...');
+console.log('[Init] Discord client created');
 
-let worker = null;
-let tesseractReady = false;
-let discordReady = false;
-let attemptedLogin = false;
-
-async function getWorker() {
-  if (worker) return worker;
-  if (!tesseractReady) {
-    console.log('[OCR] Initializing Tesseract worker...');
-    try {
-      worker = await createWorker('eng');
-      tesseractReady = true;
-      console.log('[OCR] ✓ Tesseract worker ready');
-    } catch (err) {
-      console.error('[OCR] ✗ Failed to initialize Tesseract:', err.message);
-      return null;
-    }
+async function initOCR() {
+  try {
+    console.log('[OCR] Initializing...');
+    worker = await createWorker('eng');
+    console.log('[OCR] Ready');
+  } catch (e) {
+    console.error('[OCR] Failed:', e.message);
   }
-  return worker;
 }
 
 function extractPokemonName(text) {
   if (!text || text.length === 0) return null;
-
-  const cleanText = text
-    .replace(/[\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFFEF\u4E00-\u9FAF\u3400-\u4DBF]|\uD83C[\uDDE6-\uDDFF]\uD83C[\uDDE6-\uDDFF]/g, '')
-    .trim();
   
-  const lines = cleanText.split('\n').map(l => l.trim()).filter(l => l.length > 2);
+  const clean = text.replace(/[\u3000-\u303F\u3040-\u309F\u30A0-\u30FF\uFF00-\uFFEF\u4E00-\u9FAF\u3400-\u4DBF]|\uD83C[\uDDE6-\uDDFF]\uD83C[\uDDE6-\uDDFF]/g, '').trim();
+  const lines = clean.split('\n').filter(l => l.trim().length > 2);
   
-  if (lines.length === 0) return null;
-
-  let rawName = lines[0];
+  if (!lines.length) return null;
   
-  rawName = rawName.split(/\s{2,}/)[0].split('(')[0].split(',')[0].trim();
-
-  const nameMatch = rawName.match(/^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?(?:\-[A-Z][a-z]+)?)/);
+  let name = lines[0].split(/\s{2,}/)[0].split('(')[0].split(',')[0].trim();
+  const match = name.match(/^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?(?:\-[A-Z][a-z]+)?)/);
   
-  if (nameMatch) {
-    let pokemonName = nameMatch[1].trim();
-    
-    if (pokemonName.length > 20) {
-      const words = pokemonName.split(/\s+/);
-      pokemonName = words.slice(0, 2).join(' ');
-    }
-
-    pokemonName = pokemonName
-      .replace(/cuscHoo/i, 'Cubchoo')
-      .replace(/fA$/i, '')
-      .replace(/f=.$/i, '')
-      .replace(/[^a-zA-Z\s\-]/g, '')
-      .trim();
-
-    if (pokemonName.length > 3 && pokemonName.length <= 20) {
-      return pokemonName;
-    }
-  }
-
-  return null;
+  if (!match) return null;
+  
+  name = match[1].trim();
+  if (name.length > 20) name = name.split(/\s+/).slice(0, 2).join(' ');
+  
+  name = name.replace(/cuscHoo/i, 'Cubchoo').replace(/[^a-zA-Z\s\-]/g, '').trim();
+  return (name.length > 3 && name.length <= 20) ? name : null;
 }
 
 let spamInterval = null;
 
 function startSpammer() {
-  if (!SPAM_CHANNEL_ID) {
-    console.log('[Spammer] Disabled (no SPAM_CHANNEL_ID)');
-    return;
-  }
-  if (spamInterval) clearInterval(spamInterval);
+  if (!SPAM_CHANNEL_ID) return;
   
-  console.log('[Spammer] ✓ Starting on channel:', SPAM_CHANNEL_ID);
   spamInterval = setInterval(async () => {
     try {
-      const channel = await client.channels.fetch(SPAM_CHANNEL_ID);
-      if (channel) {
-        const randomStr = Math.random().toString(36).substring(2, 8);
-        await channel.send(`${randomStr} made by quaxly`);
-      }
-    } catch (err) {
-      console.error('[Spammer] Error:', err.message);
-    }
+      const ch = await client.channels.fetch(SPAM_CHANNEL_ID);
+      if (ch) ch.send(Math.random().toString(36).substring(2, 8) + ' made by quaxly').catch(() => {});
+    } catch (e) {}
   }, 2000);
 }
 
 client.once('ready', () => {
   discordReady = true;
-  console.log('\n[Bot] ========================================');
-  console.log('[Bot] ✓✓✓ DISCORD READY ✓✓✓');
-  console.log('[Bot] Logged in as:', client.user.tag);
-  console.log('[Bot] User ID:', client.user.id);
-  console.log('[Bot] ========================================\n');
+  console.log('\n[SUCCESS] BOT LOGGED IN AS:', client.user.tag, '\n');
   startSpammer();
-  getWorker().catch(err => console.error('[Bot] OCR initialization error:', err));
+  initOCR();
 });
 
-client.on('error', error => {
-  console.error('[Bot] ERROR EVENT:', error.message);
-  console.error('[Bot] Error code:', error.code);
-  console.error('[Bot] Error type:', error.constructor.name);
+client.on('error', (e) => {
+  console.error('[Discord Error]', e.message);
+});
+
+client.on('warn', (w) => {
+  console.warn('[Discord Warn]', w);
 });
 
 client.on('disconnect', () => {
-  console.warn('[Bot] ⚠ Disconnected from Discord');
+  console.warn('[Disconnect] Attempting reconnect...');
   discordReady = false;
 });
 
-client.on('reconnecting', () => {
-  console.log('[Bot] Attempting to reconnect...');
-});
-
-client.on('warn', warning => {
-  console.warn('[Bot] Warning:', warning);
-});
-
-client.on('messageCreate', async message => {
+client.on('messageCreate', async (msg) => {
   try {
-    const hasEmbeds = message.embeds.length > 0;
-    if (message.author.id === client.user.id) return;
-
-    if (hasEmbeds && (message.author.username.includes('Poké-Name') || message.author.username.includes('P2 Assistant'))) {
-      const embed = message.embeds[0];
-      let pokemonName = null;
-
-      const textToScan = (embed.title || '') + ' ' + (embed.description || '');
-      if (textToScan.includes('Name of the Pokemon') || textToScan.includes('Possible')) {
-        const match = textToScan.match(/(?:\d+\)\s+|Pokémon:\s+|pokemons:\s+)([a-zA-Z0-9\- ]+)/i);
-        if (match) {
-          pokemonName = extractPokemonName(match[1]);
-        }
+    if (msg.author.id === client.user.id || !msg.embeds.length) return;
+    
+    if (msg.author.username.includes('Poké-Name') || msg.author.username.includes('P2 Assistant')) {
+      const emb = msg.embeds[0];
+      const text = (emb.title || '') + ' ' + (emb.description || '');
+      let poke = null;
+      
+      if (text.includes('Name of the Pokemon') || text.includes('Possible')) {
+        const m = text.match(/(?:\d+\)\s+|Pokémon:\s+|pokemons:\s+)([a-zA-Z0-9\- ]+)/i);
+        if (m) poke = extractPokemonName(m[1]);
       }
-
-      if (!pokemonName && (embed.image?.url || embed.thumbnail?.url)) {
-        const imageUrl = embed.image?.url || embed.thumbnail?.url;
-        console.log('[Auto-Catch] Running OCR on image...');
+      
+      if (!poke && (emb.image?.url || emb.thumbnail?.url)) {
+        const url = emb.image?.url || emb.thumbnail?.url;
         try {
-          const w = await getWorker();
-          if (w) {
-            const { data: { text } } = await w.recognize(imageUrl);
-            pokemonName = extractPokemonName(text);
-            console.log('[Auto-Catch] OCR extracted:', pokemonName || 'None');
+          if (worker) {
+            const res = await worker.recognize(url);
+            poke = extractPokemonName(res.data.text);
+            console.log('[OCR] Extracted:', poke || 'none');
           }
-        } catch (err) {
-          console.error('[Auto-Catch] OCR Error:', err.message);
+        } catch (e) {
+          console.error('[OCR Error]', e.message);
         }
       }
-
-      if (pokemonName) {
-        console.log('[Auto-Catch] ✓ Sending catch command for:', pokemonName);
+      
+      if (poke) {
+        console.log('[Catch]', poke);
         setTimeout(() => {
-          message.channel.send(`<@${POKETWO_ID}> catch ${pokemonName.toLowerCase()}`).catch(console.error);
+          msg.channel.send(`<@${POKETWO_ID}> catch ${poke.toLowerCase()}`).catch(() => {});
         }, 500);
-        return;
       }
     }
-
-    if (message.author.id === POKETWO_ID) {
-      if (message.content.includes('verify') || message.content.includes('captcha') || message.content.includes('human')) {
-        console.log('[Bot] ⚠ Captcha detected! Sending recovery...');
-        message.channel.send(`<@${POKETWO_ID}> inc p`).catch(console.error);
-        message.channel.send(`<@${POKETWO_ID}> inc p all -y`).catch(console.error);
-        return;
+    
+    if (msg.author.id === POKETWO_ID) {
+      if (msg.content.includes('verify') || msg.content.includes('captcha') || msg.content.includes('human')) {
+        console.log('[Captcha] Sending recovery');
+        msg.channel.send(`<@${POKETWO_ID}> inc p`).catch(() => {});
+        msg.channel.send(`<@${POKETWO_ID}> inc p all -y`).catch(() => {});
       }
     }
-
-    if (message.content.includes('Possible pokemons:') || message.content.includes('Possible Pokémon:')) {
-      const hintPart = message.content.split(/Possible Pok[eé]mons?:/i)[1]?.trim();
-      if (hintPart) {
-        const names = hintPart.split(/,|\s+/).map(n => n.trim().replace(/[^a-zA-Z0-9\-]/g, '')).filter(n => n.length > 2);
-        names.forEach((name, index) => {
+    
+    if (msg.content.includes('Possible pokemons:') || msg.content.includes('Possible Pokémon:')) {
+      const hints = msg.content.split(/Possible Pok[eé]mons?:/i)[1];
+      if (hints) {
+        const names = hints.split(/,|\s+/).map(n => n.trim().replace(/[^a-zA-Z0-9\-]/g, '')).filter(n => n.length > 2);
+        names.forEach((n, i) => {
           setTimeout(() => {
-            message.channel.send(`<@${POKETWO_ID}> catch ${name.toLowerCase()}`).catch(console.error);
-          }, index * 3000 + 500);
+            msg.channel.send(`<@${POKETWO_ID}> catch ${n.toLowerCase()}`).catch(() => {});
+          }, i * 3000 + 500);
         });
       }
     }
-
-    if (message.content.includes('⏳')) {
-      console.log('[Bot] Cooldown detected, waiting...');
+    
+    if (msg.content.includes('⏳')) {
       setTimeout(() => {
-        message.channel.send(`<@${POKETWO_ID}> h`).catch(console.error);
+        msg.channel.send(`<@${POKETWO_ID}> h`).catch(() => {});
       }, 3500);
     }
-  } catch (err) {
-    console.error('[Bot] Error in messageCreate:', err.message);
+  } catch (e) {
+    console.error('[Message Error]', e.message);
   }
 });
 
-process.on('unhandledRejection', err => {
-  console.error('[Error] Unhandled Promise Rejection:', err);
-});
-
-process.on('uncaughtException', err => {
-  console.error('[Error] Uncaught Exception:', err);
-});
+process.on('unhandledRejection', (e) => console.error('[Rejection]', e));
+process.on('uncaughtException', (e) => console.error('[Exception]', e));
 
 const app = express();
 
 app.get('/', (req, res) => {
-  const status = {
-    bot: discordReady ? 'ready' : 'connecting',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    loginAttempted: attemptedLogin
-  };
-  res.json(status);
+  res.json({ status: discordReady ? 'ready' : 'connecting', uptime: process.uptime() });
 });
 
 const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log('[Server] Running on port', PORT));
 
-app.listen(PORT, () => {
-  console.log('[Server] ✓ Express server running on port', PORT);
+console.log('[Login] Connecting to Discord...');
+
+client.login(TOKEN).catch((e) => {
+  console.error('[Login Failed]', e.message);
+  setTimeout(() => process.exit(1), 1000);
 });
-
-console.log('[Startup] Initiating Discord login...');
-console.log('[Startup] Token prefix:', TOKEN.substring(0, 15) + '...');
-
-attemptedLogin = true;
-
-client.login(TOKEN)
-  .then(() => {
-    console.log('[Startup] ✓ Login call successful');
-    console.log('[Startup] Waiting for ready event (checking gateway connection)...');
-  })
-  .catch(err => {
-    console.error('[Startup] ✗ Login failed with error:', err.message);
-    console.error('[Startup] Error code:', err.code);
-    console.error('[Startup] Error type:', err.constructor.name);
-    if (err.code === 'TOKEN_INVALID') {
-      console.error('[Startup] Token is invalid. Please get a fresh token from Discord.');
-    }
-    setTimeout(() => process.exit(1), 2000);
-  });
-
-let readyCheckInterval = setInterval(() => {
-  if (!discordReady) {
-    const elapsed = Math.floor(process.uptime());
-    console.log('[Startup] Still connecting... (' + elapsed + 's)');
-  } else {
-    clearInterval(readyCheckInterval);
-  }
-}, 5000);
 
 setTimeout(() => {
   if (!discordReady) {
-    console.error('\n[Startup] ✗ TIMEOUT: Discord did not ready within 60 seconds');
-    console.error('[Startup] Possible causes:');
-    console.error('[Startup]   1. Token is invalid or expired (try getting a fresh one)');
-    console.error('[Startup]   2. Discord account is locked or banned');
-    console.error('[Startup]   3. Network issue between Render and Discord');
-    console.error('[Startup]   4. Discord is blocking the connection\n');
-    console.log('[Startup] The bot will keep retrying...\n');
+    console.log('[Waiting] Still connecting...');
   }
-}, 60000);
-
-console.log('[Startup] ============================================');
-console.log('[Startup] Initialization complete');
-console.log('[Startup] ============================================\n');
+}, 10000);
