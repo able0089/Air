@@ -5,7 +5,8 @@ const { createWorker } = require('tesseract.js');
 console.log('[Startup] ============================================');
 console.log('[Startup] Pokétwo Discord Bot Starting');
 console.log('[Startup] Node version:', process.version);
-console.log('[Startup] Environment: ' + (process.env.NODE_ENV || 'production'));
+console.log('[Startup] Platform:', process.platform);
+console.log('[Startup] Arch:', process.arch);
 console.log('[Startup] ============================================');
 
 const TOKEN = process.env.TOKEN;
@@ -24,14 +25,17 @@ if (SPAM_CHANNEL_ID) {
 }
 
 const client = new Client({
-  allowWebAssembly: true
+  allowWebAssembly: true,
+  retryLimit: 3
 });
 
 console.log('[Startup] ✓ Discord client created');
+console.log('[Startup] ✓ Setting up event handlers...');
 
 let worker = null;
 let tesseractReady = false;
 let discordReady = false;
+let attemptedLogin = false;
 
 async function getWorker() {
   if (worker) return worker;
@@ -115,7 +119,7 @@ function startSpammer() {
 client.once('ready', () => {
   discordReady = true;
   console.log('\n[Bot] ========================================');
-  console.log('[Bot] ✓ DISCORD READY');
+  console.log('[Bot] ✓✓✓ DISCORD READY ✓✓✓');
   console.log('[Bot] Logged in as:', client.user.tag);
   console.log('[Bot] User ID:', client.user.id);
   console.log('[Bot] ========================================\n');
@@ -123,21 +127,19 @@ client.once('ready', () => {
   getWorker().catch(err => console.error('[Bot] OCR initialization error:', err));
 });
 
-client.on('reconnecting', () => {
-  console.warn('[Bot] Attempting to reconnect to Discord...');
+client.on('error', error => {
+  console.error('[Bot] ERROR EVENT:', error.message);
+  console.error('[Bot] Error code:', error.code);
+  console.error('[Bot] Error type:', error.constructor.name);
 });
 
 client.on('disconnect', () => {
-  console.warn('[Bot] Disconnected from Discord');
+  console.warn('[Bot] ⚠ Disconnected from Discord');
   discordReady = false;
 });
 
-client.on('error', error => {
-  console.error('[Bot] Error event:', error.message);
-  if (error.code === 'TOKEN_INVALID') {
-    console.error('[Bot] CRITICAL: Invalid token! Get a new one from Discord.');
-    process.exit(1);
-  }
+client.on('reconnecting', () => {
+  console.log('[Bot] Attempting to reconnect...');
 });
 
 client.on('warn', warning => {
@@ -231,7 +233,8 @@ app.get('/', (req, res) => {
   const status = {
     bot: discordReady ? 'ready' : 'connecting',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    loginAttempted: attemptedLogin
   };
   res.json(status);
 });
@@ -243,31 +246,46 @@ app.listen(PORT, () => {
 });
 
 console.log('[Startup] Initiating Discord login...');
-console.log('[Startup] Token: ' + TOKEN.substring(0, 10) + '...');
+console.log('[Startup] Token prefix:', TOKEN.substring(0, 15) + '...');
 
-const loginAttempt = client.login(TOKEN);
+attemptedLogin = true;
 
-loginAttempt
+client.login(TOKEN)
   .then(() => {
-    console.log('[Startup] ✓ Login call successful, waiting for ready event...');
+    console.log('[Startup] ✓ Login call successful');
+    console.log('[Startup] Waiting for ready event (checking gateway connection)...');
   })
   .catch(err => {
-    console.error('[Startup] ✗ Login failed immediately:', err.message);
+    console.error('[Startup] ✗ Login failed with error:', err.message);
     console.error('[Startup] Error code:', err.code);
-    console.error('[Startup] Full error:', err);
-    setTimeout(() => process.exit(1), 1000);
+    console.error('[Startup] Error type:', err.constructor.name);
+    if (err.code === 'TOKEN_INVALID') {
+      console.error('[Startup] Token is invalid. Please get a fresh token from Discord.');
+    }
+    setTimeout(() => process.exit(1), 2000);
   });
+
+let readyCheckInterval = setInterval(() => {
+  if (!discordReady) {
+    const elapsed = Math.floor(process.uptime());
+    console.log('[Startup] Still connecting... (' + elapsed + 's)');
+  } else {
+    clearInterval(readyCheckInterval);
+  }
+}, 5000);
 
 setTimeout(() => {
   if (!discordReady) {
-    console.error('[Startup] ✗ TIMEOUT: Discord did not ready within 30 seconds');
-    console.error('[Startup] This usually means:');
-    console.error('[Startup]   - Your token is invalid or expired');
-    console.error('[Startup]   - Discord account is locked/banned');
-    console.error('[Startup]   - Network connectivity issue to Discord');
+    console.error('\n[Startup] ✗ TIMEOUT: Discord did not ready within 60 seconds');
+    console.error('[Startup] Possible causes:');
+    console.error('[Startup]   1. Token is invalid or expired (try getting a fresh one)');
+    console.error('[Startup]   2. Discord account is locked or banned');
+    console.error('[Startup]   3. Network issue between Render and Discord');
+    console.error('[Startup]   4. Discord is blocking the connection\n');
+    console.log('[Startup] The bot will keep retrying...\n');
   }
-}, 30000);
+}, 60000);
 
 console.log('[Startup] ============================================');
-console.log('[Startup] Initialization complete, waiting for connection...');
+console.log('[Startup] Initialization complete');
 console.log('[Startup] ============================================\n');
