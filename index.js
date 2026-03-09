@@ -13,21 +13,17 @@ if (!TOKEN) {
 const POKETWO_ID = '716390085896962058';
 const SPAM_CHANNEL_ID = process.env.SPAM_CHANNEL_ID;
 
+console.log('[Config] SPAM_CHANNEL_ID:', SPAM_CHANNEL_ID || 'NOT SET');
+
 let discordReady = false;
 let worker = null;
+let messageCount = 0;
 
 const client = new Client({
-  intents: [],
-  failIfNotExists: false,
+  intents: 32767,
+  partials: ['MESSAGE', 'CHANNEL', 'GUILD_MEMBER', 'USER', 'GUILD'],
   allowWebAssembly: true,
-  retryLimit: 5,
-  messageCacheLifetime: 3600,
-  messageSweepInterval: 3600,
-  invalidRequestWarningInterval: 0,
-  http: {
-    agent: null,
-    version: 10
-  }
+  retryLimit: 5
 });
 
 console.log('[Init] Discord client created');
@@ -65,19 +61,34 @@ function extractPokemonName(text) {
 let spamInterval = null;
 
 function startSpammer() {
-  if (!SPAM_CHANNEL_ID) return;
+  if (!SPAM_CHANNEL_ID) {
+    console.log('[Spammer] Disabled - SPAM_CHANNEL_ID not set');
+    return;
+  }
   
+  console.log('[Spammer] Starting on channel:', SPAM_CHANNEL_ID);
   spamInterval = setInterval(async () => {
     try {
       const ch = await client.channels.fetch(SPAM_CHANNEL_ID);
-      if (ch) ch.send(Math.random().toString(36).substring(2, 8) + ' made by quaxly').catch(() => {});
-    } catch (e) {}
+      if (ch) {
+        const msg = Math.random().toString(36).substring(2, 8) + ' made by quaxly';
+        await ch.send(msg);
+        console.log('[Spammer] Sent message');
+      }
+    } catch (e) {
+      console.error('[Spammer Error]', e.message);
+    }
   }, 2000);
 }
 
 client.once('ready', () => {
   discordReady = true;
-  console.log('\n[SUCCESS] BOT LOGGED IN AS:', client.user.tag, '\n');
+  console.log('\n[SUCCESS] BOT LOGGED IN AS:', client.user.tag);
+  console.log('[Info] Bot ID:', client.user.id);
+  console.log('[Info] Guilds:', client.guilds.cache.size);
+  console.log('[Info] Channels:', client.channels.cache.size);
+  console.log('[Info] Ready to receive messages\n');
+  
   startSpammer();
   initOCR();
 });
@@ -91,31 +102,76 @@ client.on('warn', (w) => {
 });
 
 client.on('disconnect', () => {
-  console.warn('[Disconnect] Attempting reconnect...');
+  console.warn('[Disconnect] Bot disconnected');
   discordReady = false;
 });
 
 client.on('messageCreate', async (msg) => {
   try {
-    if (msg.author.id === client.user.id || !msg.embeds.length) return;
+    messageCount++;
+    
+    if (msg.author.id === client.user.id) {
+      console.log('[Message] Own message - ignoring');
+      return;
+    }
+    
+    console.log(`[Message #${messageCount}] From ${msg.author.username} in ${msg.channel?.name || 'DM'}: ${msg.content?.substring(0, 50) || '(embeds)'}`);
+    
+    if (!msg.embeds.length) {
+      console.log('[Message] No embeds - checking for text commands');
+      
+      if (msg.content.includes('Possible pokemons:') || msg.content.includes('Possible Pokémon:')) {
+        console.log('[Hints] Found hint list');
+        const hints = msg.content.split(/Possible Pok[eé]mons?:/i)[1];
+        if (hints) {
+          const names = hints.split(/,|\s+/).map(n => n.trim().replace(/[^a-zA-Z0-9\-]/g, '')).filter(n => n.length > 2);
+          names.forEach((n, i) => {
+            setTimeout(() => {
+              msg.channel.send(`<@${POKETWO_ID}> catch ${n.toLowerCase()}`).catch(e => console.error('[Send Error]', e.message));
+            }, i * 3000 + 500);
+          });
+        }
+      }
+      
+      if (msg.content.includes('⏳')) {
+        console.log('[Cooldown] Detected');
+        setTimeout(() => {
+          msg.channel.send(`<@${POKETWO_ID}> h`).catch(e => console.error('[Send Error]', e.message));
+        }, 3500);
+      }
+      
+      return;
+    }
+    
+    console.log('[Message] Has embeds - checking for Poké-Name');
     
     if (msg.author.username.includes('Poké-Name') || msg.author.username.includes('P2 Assistant')) {
+      console.log('[Poké-Name] Found message from', msg.author.username);
       const emb = msg.embeds[0];
-      const text = (emb.title || '') + ' ' + (emb.description || '');
       let poke = null;
       
+      const text = (emb.title || '') + ' ' + (emb.description || '');
+      console.log('[Poké-Name] Text:', text.substring(0, 100));
+      
       if (text.includes('Name of the Pokemon') || text.includes('Possible')) {
+        console.log('[Poké-Name] Trying text extraction');
         const m = text.match(/(?:\d+\)\s+|Pokémon:\s+|pokemons:\s+)([a-zA-Z0-9\- ]+)/i);
-        if (m) poke = extractPokemonName(m[1]);
+        if (m) {
+          poke = extractPokemonName(m[1]);
+          console.log('[Poké-Name] Text extraction result:', poke);
+        }
       }
       
       if (!poke && (emb.image?.url || emb.thumbnail?.url)) {
         const url = emb.image?.url || emb.thumbnail?.url;
+        console.log('[Poké-Name] No text match, trying OCR on:', url.substring(0, 50));
         try {
           if (worker) {
             const res = await worker.recognize(url);
             poke = extractPokemonName(res.data.text);
             console.log('[OCR] Extracted:', poke || 'none');
+          } else {
+            console.log('[OCR] Worker not ready yet');
           }
         } catch (e) {
           console.error('[OCR Error]', e.message);
@@ -123,40 +179,23 @@ client.on('messageCreate', async (msg) => {
       }
       
       if (poke) {
-        console.log('[Catch]', poke);
+        console.log('[CATCH] Sending catch for:', poke);
         setTimeout(() => {
-          msg.channel.send(`<@${POKETWO_ID}> catch ${poke.toLowerCase()}`).catch(() => {});
+          msg.channel.send(`<@${POKETWO_ID}> catch ${poke.toLowerCase()}`).catch(e => console.error('[Send Error]', e.message));
         }, 500);
       }
     }
     
     if (msg.author.id === POKETWO_ID) {
+      console.log('[Pokétwo] Message from Pokétwo:', msg.content.substring(0, 100));
       if (msg.content.includes('verify') || msg.content.includes('captcha') || msg.content.includes('human')) {
-        console.log('[Captcha] Sending recovery');
+        console.log('[Captcha] Detected - sending recovery');
         msg.channel.send(`<@${POKETWO_ID}> inc p`).catch(() => {});
         msg.channel.send(`<@${POKETWO_ID}> inc p all -y`).catch(() => {});
       }
     }
-    
-    if (msg.content.includes('Possible pokemons:') || msg.content.includes('Possible Pokémon:')) {
-      const hints = msg.content.split(/Possible Pok[eé]mons?:/i)[1];
-      if (hints) {
-        const names = hints.split(/,|\s+/).map(n => n.trim().replace(/[^a-zA-Z0-9\-]/g, '')).filter(n => n.length > 2);
-        names.forEach((n, i) => {
-          setTimeout(() => {
-            msg.channel.send(`<@${POKETWO_ID}> catch ${n.toLowerCase()}`).catch(() => {});
-          }, i * 3000 + 500);
-        });
-      }
-    }
-    
-    if (msg.content.includes('⏳')) {
-      setTimeout(() => {
-        msg.channel.send(`<@${POKETWO_ID}> h`).catch(() => {});
-      }, 3500);
-    }
   } catch (e) {
-    console.error('[Message Error]', e.message);
+    console.error('[Message Error]', e.message, e.stack);
   }
 });
 
@@ -166,7 +205,11 @@ process.on('uncaughtException', (e) => console.error('[Exception]', e));
 const app = express();
 
 app.get('/', (req, res) => {
-  res.json({ status: discordReady ? 'ready' : 'connecting', uptime: process.uptime() });
+  res.json({ 
+    status: discordReady ? 'ready' : 'connecting', 
+    uptime: process.uptime(),
+    messages_received: messageCount
+  });
 });
 
 const PORT = process.env.PORT || 3000;
